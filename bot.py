@@ -100,7 +100,16 @@ class MapBot:
                 logger.info("Reached limit (%s NIKs)", limit)
                 break
 
-            self._go_homepage(page)
+            try:
+                self._go_homepage(page)
+            except (PlaywrightTimeout, RuntimeError) as exc:
+                logger.error("Homepage error: %s — trying to recover...", exc)
+                try:
+                    self._login(page)
+                except Exception:
+                    page.goto(HOMEPAGE_URL, wait_until="domcontentloaded", timeout=60000)
+                    page.wait_for_timeout(2000)
+
             stock = self._get_stock(page)
             logger.info(
                 "Current stock: %s",
@@ -177,10 +186,43 @@ class MapBot:
         logger.info("Login successful. URL: %s", page.url)
 
     def _go_homepage(self, page: Page) -> None:
-        page.goto(HOMEPAGE_URL, wait_until="networkidle")
-        page.wait_for_timeout(1500)
+        for attempt in range(3):
+            try:
+                if "merchant-login" in page.url:
+                    self._login(page)
+                    return
+
+                page.goto(HOMEPAGE_URL, wait_until="networkidle", timeout=60000)
+                page.wait_for_timeout(1500)
+                self._close_modals(page)
+
+                catat = page.get_by_text("Catat Penjualan", exact=True)
+                if catat.is_visible():
+                    return
+                catat.wait_for(state="visible", timeout=8000)
+                return
+            except PlaywrightTimeout:
+                logger.warning("Homepage not ready, retry %s/3", attempt + 1)
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(500)
+                if attempt == 2:
+                    page.reload(wait_until="networkidle")
+                    page.wait_for_timeout(2000)
+
+        raise RuntimeError("Could not return to homepage. Run again or use: python3 main.py test --visible")
+
+    def _return_home(self, page: Page) -> None:
+        """Close any open dialog and ensure homepage is reachable."""
+        self._click_button(page, "KEMBALI KE HALAMAN UTAMA")
+        self._click_button(page, "TUTUP")
         self._close_modals(page)
-        page.get_by_text("Catat Penjualan", exact=True).wait_for(state="visible", timeout=15000)
+        try:
+            self._go_homepage(page)
+        except (PlaywrightTimeout, RuntimeError):
+            logger.warning("Force-reloading homepage...")
+            page.goto(HOMEPAGE_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(2000)
+            self._close_modals(page)
 
     def _open_catat_penjualan(self, page: Page) -> None:
         self._go_homepage(page)
@@ -191,14 +233,24 @@ class MapBot:
         logger.info("NIK input ready")
 
     def _close_modals(self, page: Page) -> None:
-        for _ in range(8):
+        for _ in range(10):
+            catat = page.get_by_text("Catat Penjualan", exact=True)
             body = page.locator("body").inner_text()
-            if "Catat Penjualan" in body and "MASUKKAN NIK KTP" not in body:
-                if page.get_by_text("Catat Penjualan", exact=True).is_visible():
-                    return
+            nik_modal_open = "MASUKKAN NIK KTP" in body or page.get_by_placeholder(
+                NIK_PLACEHOLDER
+            ).is_visible()
+
+            if catat.is_visible() and not nik_modal_open:
+                return
 
             clicked = False
-            for name in ["TUTUP", "UBAH PESANAN", "Ganti Pelanggan", "Batal"]:
+            for name in [
+                "KEMBALI KE HALAMAN UTAMA",
+                "TUTUP",
+                "UBAH PESANAN",
+                "Ganti Pelanggan",
+                "Batal",
+            ]:
                 btn = page.get_by_role("button", name=name)
                 if btn.count() > 0 and btn.first.is_visible():
                     try:
@@ -208,7 +260,14 @@ class MapBot:
                         break
                     except PlaywrightTimeout:
                         pass
+
             if not clicked:
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(400)
+                if catat.is_visible() and not page.get_by_placeholder(
+                    NIK_PLACEHOLDER
+                ).is_visible():
+                    return
                 break
 
     def _get_stock(self, page: Page) -> int | None:
@@ -231,14 +290,16 @@ class MapBot:
         body = page.locator("body").inner_text()
         if "Pelanggan Tidak Terdaftar" in body or "tidak terdaftar" in body.lower():
             self._click_button(page, "TUTUP")
+            self._return_home(page)
             return SaleOutcome(SaleResult.SKIP, "Pelanggan Tidak Terdaftar")
 
         if self._should_skip(body):
-            self._close_modals(page)
+            self._return_home(page)
             return SaleOutcome(SaleResult.SKIP, body[:120])
 
         if not page.get_by_role("button", name="CEK PESANAN").is_visible():
-            self._close_modals(page)
+            self._click_button(page, "TUTUP")
+            self._return_home(page)
             return SaleOutcome(SaleResult.SKIP, "NIK not accepted")
 
         page.get_by_role("button", name="CEK PESANAN").click()
@@ -248,7 +309,7 @@ class MapBot:
 
         if page.locator(".rc-slider-captcha").count() > 0:
             if not solve_slider_captcha(page):
-                self._go_homepage(page)
+                self._return_home(page)
                 return SaleOutcome(SaleResult.SKIP, "Captcha solve failed")
             page.wait_for_timeout(1500)
 
@@ -258,10 +319,10 @@ class MapBot:
             return SaleOutcome(SaleResult.SUCCESS, "sale recorded")
 
         if page.get_by_placeholder(NIK_PLACEHOLDER).is_visible():
-            self._close_modals(page)
+            self._return_home(page)
             return SaleOutcome(SaleResult.ERROR, "sale not completed")
 
-        self._close_modals(page)
+        self._return_home(page)
         return SaleOutcome(SaleResult.SUCCESS, "sale submitted")
 
     def _finish_sale(self, page: Page) -> None:
