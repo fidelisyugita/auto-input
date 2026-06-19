@@ -8,8 +8,9 @@ from enum import Enum
 
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeout, sync_playwright
 
-from config import Config, HOMEPAGE_URL, LOGIN_URL
 from browser_setup import launch_browser
+from captcha_solver import solve_slider_captcha
+from config import Config, HOMEPAGE_URL, LOGIN_URL
 from nik_store import NikStore
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,8 @@ SUCCESS_PATTERNS = [
     "telah dicatat",
     "penjualan berhasil",
     "transaksi berhasil",
+    "kirim struk",
+    "kembali ke halaman utama",
 ]
 
 
@@ -53,7 +56,12 @@ class MapBot:
         self.config = config
         self.store = store
 
-    def run(self, limit: int | None = None, visible: bool | None = None) -> None:
+    def run(
+        self,
+        limit: int | None = None,
+        visible: bool | None = None,
+        wait_at_end: bool = False,
+    ) -> None:
         show_browser = visible if visible is not None else not self.config.headless
         if show_browser:
             logger.info("Opening visible browser window...")
@@ -75,51 +83,57 @@ class MapBot:
                 self._login(page)
 
                 processed = 0
-                while True:
-                    if limit is not None and processed >= limit:
-                        logger.info("Reached limit (%s NIKs)", limit)
-                        break
-
-                    self._go_homepage(page)
-                    stock = self._get_stock(page)
-                    logger.info(
-                        "Current stock: %s",
-                        f"{stock} Tabung" if stock is not None else "unknown",
-                    )
-
-                    if stock is not None and stock <= 0:
-                        logger.info("Stock is 0. Stopping.")
-                        break
-
-                    nik = self.store.next_nik()
-                    if nik is None:
-                        logger.info("No more NIKs in file.")
-                        break
-
-                    outcome = self._try_record_sale(page, nik)
-                    processed += 1
-
-                    if outcome.result == SaleResult.SUCCESS:
-                        self.store.mark_used(nik)
-                        logger.info("SUCCESS: %s", nik)
-                    elif outcome.result == SaleResult.SKIP:
-                        self.store.mark_skipped(nik, outcome.message)
-                        logger.info("SKIP: %s - %s", nik, outcome.message)
-                    elif outcome.result == SaleResult.STOCK_EMPTY:
-                        self.store.mark_skipped(nik, "stock empty")
-                        logger.info("Stock empty while processing %s. Stopping.", nik)
-                        break
-                    else:
-                        self.store.mark_skipped(nik, outcome.message or "unknown error")
-                        logger.error("ERROR: %s - %s", nik, outcome.message)
-
-                    self._pause()
+                try:
+                    self._process_sales(page, limit, processed)
+                except KeyboardInterrupt:
+                    logger.info("Stopped by user (Ctrl+C). Progress saved.")
 
             finally:
-                if show_browser:
-                    print("\n>>> Test finished. Press Enter to close the browser...")
+                if wait_at_end and show_browser:
+                    print("\n>>> Finished. Press Enter to close the browser...")
                     input()
                 browser.close()
+
+    def _process_sales(self, page: Page, limit: int | None, processed: int) -> None:
+        while True:
+            if limit is not None and processed >= limit:
+                logger.info("Reached limit (%s NIKs)", limit)
+                break
+
+            self._go_homepage(page)
+            stock = self._get_stock(page)
+            logger.info(
+                "Current stock: %s",
+                f"{stock} Tabung" if stock is not None else "unknown",
+            )
+
+            if stock is not None and stock <= 0:
+                logger.info("Stock is 0. Stopping.")
+                break
+
+            nik = self.store.next_nik()
+            if nik is None:
+                logger.info("No more NIKs in file.")
+                break
+
+            outcome = self._try_record_sale(page, nik)
+            processed += 1
+
+            if outcome.result == SaleResult.SUCCESS:
+                self.store.mark_used(nik)
+                logger.info("SUCCESS: %s", nik)
+            elif outcome.result == SaleResult.SKIP:
+                self.store.mark_skipped(nik, outcome.message)
+                logger.info("SKIP: %s - %s", nik, outcome.message)
+            elif outcome.result == SaleResult.STOCK_EMPTY:
+                self.store.mark_skipped(nik, "stock empty")
+                logger.info("Stock empty while processing %s. Stopping.", nik)
+                break
+            else:
+                self.store.mark_skipped(nik, outcome.message or "unknown error")
+                logger.error("ERROR: %s - %s", nik, outcome.message)
+
+            self._pause()
 
     def inspect(self) -> None:
         with sync_playwright() as p:
@@ -233,22 +247,14 @@ class MapBot:
         page.wait_for_timeout(2000)
 
         if page.locator(".rc-slider-captcha").count() > 0:
-            if self.config.headless:
+            if not solve_slider_captcha(page):
                 self._go_homepage(page)
-                return SaleOutcome(
-                    SaleResult.SKIP,
-                    "Captcha required — use test mode to solve manually",
-                )
-            logger.info("Captcha shown — slide it in the browser, then wait...")
-            print(
-                "\n>>> CAPTCHA: slide the puzzle in the browser window. "
-                f"Waiting up to {self.config.captcha_wait_seconds}s...\n"
-            )
-            self._wait_for_captcha_or_success(page)
+                return SaleOutcome(SaleResult.SKIP, "Captcha solve failed")
+            page.wait_for_timeout(1500)
 
         body = page.locator("body").inner_text()
         if self._is_success(body):
-            self._close_modals(page)
+            self._finish_sale(page)
             return SaleOutcome(SaleResult.SUCCESS, "sale recorded")
 
         if page.get_by_placeholder(NIK_PLACEHOLDER).is_visible():
@@ -258,16 +264,14 @@ class MapBot:
         self._close_modals(page)
         return SaleOutcome(SaleResult.SUCCESS, "sale submitted")
 
-    def _wait_for_captcha_or_success(self, page: Page) -> None:
-        deadline = time.time() + self.config.captcha_wait_seconds
-        while time.time() < deadline:
-            body = page.locator("body").inner_text()
-            if self._is_success(body):
-                return
-            if page.locator(".rc-slider-captcha").count() == 0:
+    def _finish_sale(self, page: Page) -> None:
+        for name in ["KEMBALI KE HALAMAN UTAMA", "TUTUP", "OK"]:
+            btn = page.get_by_role("button", name=name)
+            if btn.count() > 0 and btn.first.is_visible():
+                btn.first.click()
                 page.wait_for_timeout(1500)
                 return
-            page.wait_for_timeout(1000)
+        self._close_modals(page)
 
     def _click_button(self, page: Page, name: str) -> bool:
         btn = page.get_by_role("button", name=name)

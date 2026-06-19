@@ -38,7 +38,7 @@ class Config:
             nik_file=BASE_DIR / os.getenv("NIK_FILE", "nik.json"),
             headless=os.getenv("HEADLESS", "false").lower() == "true",
             action_delay_ms=int(os.getenv("ACTION_DELAY_MS", "500")),
-            test_limit=int(os.getenv("TEST_LIMIT", "3")),
+            test_limit=int(os.getenv("TEST_LIMIT", "200")),
             captcha_wait_seconds=int(os.getenv("CAPTCHA_WAIT_SECONDS", "120")),
             progress_file=BASE_DIR / "progress.json",
         )

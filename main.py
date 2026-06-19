@@ -10,7 +10,7 @@ from pathlib import Path
 from bot import MapBot
 from browser_setup import ensure_playwright_browser
 from config import Config
-from nik_store import NikStore, Progress
+from nik_store import NikStore
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -38,25 +38,38 @@ def cmd_setup() -> None:
         [sys.executable, "-m", "playwright", "install", "chromium", "--force"],
         check=True,
     )
-    print("Setup complete. Run: python3 main.py test")
+    print("Setup complete.")
+    print("  Headless:  python3 main.py run")
+    print("  Visible:   python3 main.py run --visible")
 
 
-def cmd_test(config: Config) -> None:
+def cmd_test(config: Config, limit: int | None = None) -> None:
     ensure_playwright_browser()
-    config.headless = False
     store = NikStore(config.nik_file, config.progress_file)
-    logging.info("TEST MODE - visible browser, limit %s NIKs", config.test_limit)
+    effective_limit = limit if limit is not None else config.test_limit
+    if effective_limit == 0:
+        effective_limit = None
+        logging.info(
+            "TEST MODE - visible browser, until stock=0 or Ctrl+C (no limit)"
+        )
+    else:
+        logging.info(
+            "TEST MODE - visible browser, up to %s NIKs (Ctrl+C to stop early)",
+            effective_limit,
+        )
     logging.info(store.summary())
-    MapBot(config, store).run(limit=config.test_limit, visible=True)
+    MapBot(config, store).run(
+        limit=effective_limit, visible=True, wait_at_end=True
+    )
 
 
-def cmd_run(config: Config) -> None:
+def cmd_run(config: Config, visible: bool) -> None:
     ensure_playwright_browser()
-    config.headless = True
     store = NikStore(config.nik_file, config.progress_file)
-    logging.info("AUTOMATION MODE - headless, until stock = 0")
+    mode = "visible browser" if visible else "headless"
+    logging.info("RUN MODE (%s) - until stock = 0", mode)
     logging.info(store.summary())
-    MapBot(config, store).run()
+    MapBot(config, store).run(visible=visible, wait_at_end=False)
 
 
 def cmd_inspect(config: Config) -> None:
@@ -89,13 +102,22 @@ def main() -> None:
         "command",
         choices=["test", "run", "inspect", "status", "reset", "setup"],
         help=(
-            "test=visible browser limited NIKs | "
-            "run=full headless automation | "
-            "inspect=debug page elements | "
-            "status=show progress | "
-            "reset=clear progress | "
-            "setup=install dependencies and browser"
+            "test=visible browser (default 200 NIKs, Ctrl+C to stop) | "
+            "run=full automation (add --visible to watch live) | "
+            "inspect=debug page | status=progress | reset=clear progress"
         ),
+    )
+    parser.add_argument(
+        "--visible",
+        action="store_true",
+        help="Open browser window (use with: run --visible)",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Max NIKs for test mode (0 = no limit). Default: TEST_LIMIT from .env (200)",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
@@ -116,7 +138,7 @@ def main() -> None:
                 nik_file=Path("nik.json"),
                 headless=True,
                 action_delay_ms=500,
-                test_limit=100,
+                test_limit=200,
                 captcha_wait_seconds=120,
                 progress_file=Path("progress.json"),
             )
@@ -129,14 +151,16 @@ def main() -> None:
         print("Copy .env.example to .env and fill in your credentials.")
         sys.exit(1)
 
-    commands = {
-        "test": cmd_test,
-        "run": cmd_run,
-        "inspect": cmd_inspect,
-        "status": cmd_status,
-        "reset": cmd_reset,
-    }
-    commands[args.command](config)
+    if args.command == "test":
+        cmd_test(config, limit=args.limit)
+    elif args.command == "run":
+        cmd_run(config, visible=args.visible)
+    elif args.command == "inspect":
+        cmd_inspect(config)
+    elif args.command == "status":
+        cmd_status(config)
+    elif args.command == "reset":
+        cmd_reset(config)
 
 
 if __name__ == "__main__":
