@@ -1,0 +1,24 @@
+services:
+  map-automation:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: map-automation:latest
+    container_name: map-automation
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8081}:${WEB_PORT:-8081}"
+    env_file:
+      - .env
+    environment:
+      - DATA_DIR=/data
+      - HEADLESS=true
+      - WEB_PORT=${WEB_PORT:-8081}
+    volumes:
+      - map-data:/data
+    shm_size: "1gb"
+    security_opt:
+      - seccomp:unconfined
+
+volumes:
+  map-data:

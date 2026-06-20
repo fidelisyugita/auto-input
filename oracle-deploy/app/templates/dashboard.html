@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — MAP Automation{% endblock %}
+{% block body %}
+<div class="topbar">
+  <div>
+    <h1>MAP Automation</h1>
+    <p class="muted">Logged in as {{ user }}</p>
+  </div>
+  <a href="/logout" class="btn btn-muted">Logout</a>
+</div>
+
+{% if message %}
+<div class="alert alert-ok">{{ message }}</div>
+{% endif %}
+{% if error %}
+<div class="alert alert-err">{{ error }}</div>
+{% endif %}
+
+<div class="card">
+  <h2>Bot status</h2>
+  <div class="row" style="margin-bottom: 16px">
+    <span class="badge badge-{{ runner.state }}">{{ runner.state }}</span>
+    {% if runner.last_exit_code is not none and not runner.running %}
+    <span class="muted">Last exit code: {{ runner.last_exit_code }}</span>
+    {% endif %}
+  </div>
+  <div class="row">
+    <form method="post" action="/start">
+      <button type="submit" class="btn btn-primary" {% if runner.running %}disabled{% endif %}>Start bot</button>
+    </form>
+    <form method="post" action="/stop">
+      <button type="submit" class="btn btn-danger" {% if not runner.running %}disabled{% endif %}>Stop bot</button>
+    </form>
+  </div>
+  <p class="muted" style="margin-top:12px">Runs headless until stock = 0 or you press Stop.</p>
+</div>
+
+<div class="card">
+  <h2>Merchant settings</h2>
+  <form method="post" action="/settings">
+    <label for="merchant_phone">MAP phone / email</label>
+    <input type="text" id="merchant_phone" name="merchant_phone" value="{{ settings.merchant_phone }}" required>
+
+    <label for="merchant_pin">MAP PIN</label>
+    <input type="password" id="merchant_pin" name="merchant_pin" value="{{ settings.merchant_pin }}" required>
+
+    <label for="action_delay_ms">Action delay (ms)</label>
+    <input type="number" id="action_delay_ms" name="action_delay_ms" value="{{ settings.action_delay_ms }}" min="100" max="5000">
+
+    <div style="margin-top: 16px">
+      <button type="submit" class="btn btn-primary" {% if runner.running %}disabled{% endif %}>Save settings</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>NIK file</h2>
+  {% if nik.exists %}
+  <p class="muted">{{ nik.filename }} — {{ nik.total }} NIKs loaded</p>
+  {% else %}
+  <p class="muted">No NIK file uploaded yet.</p>
+  {% endif %}
+  <form method="post" action="/upload-nik" enctype="multipart/form-data" style="margin-top:12px">
+    <label for="nik_file">Upload nik.json</label>
+    <input type="file" id="nik_file" name="nik_file" accept=".json,application/json" required>
+    <div style="margin-top: 12px">
+      <button type="submit" class="btn btn-primary" {% if runner.running %}disabled{% endif %}>Upload</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Progress</h2>
+  <div class="progress-box">{{ progress }}</div>
+</div>
+
+<div class="card">
+  <h2>Logs</h2>
+  <pre class="logs" id="logs">{{ logs }}</pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  async function refreshStatus() {
+    try {
+      const res = await fetch('/api/status');
+      if (!res.ok) return;
+      const data = await res.json();
+      const badge = document.querySelector('.badge');
+      if (badge && data.runner) {
+        badge.textContent = data.runner.state;
+        badge.className = 'badge badge-' + data.runner.state;
+      }
+      const logs = document.getElementById('logs');
+      if (logs && data.logs) logs.textContent = data.logs;
+    } catch (_) {}
+  }
+  setInterval(refreshStatus, 5000);
+</script>
+{% endblock %}

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Login — MAP Automation{% endblock %}
+{% block body %}
+<div class="card" style="max-width: 400px; margin: 80px auto;">
+  <h1>MAP Automation</h1>
+  <p class="muted">Sign in to control the bot</p>
+
+  {% if error %}
+  <div class="alert alert-err">{{ error }}</div>
+  {% endif %}
+
+  <form method="post" action="/login">
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" required autofocus>
+
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" required>
+
+    <div style="margin-top: 20px">
+      <button type="submit" class="btn btn-primary" style="width:100%">Sign in</button>
+    </div>
+  </form>
+</div>
+{% endblock %}
