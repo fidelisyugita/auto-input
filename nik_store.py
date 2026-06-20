@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -94,6 +97,17 @@ def save_filtered_file(
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def save_main_file(path: Path, niks: list[str]) -> None:
+    payload = {
+        "description": (
+            "NIK list for MAP automation. Working NIKs (successful sales) listed first."
+        ),
+        "total": len(niks),
+        "niks": niks,
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
 class NikStore:
     def __init__(
         self,
@@ -106,16 +120,9 @@ class NikStore:
         self.progress_path = progress_path
         self.progress, migrated = Progress.load(progress_path)
 
-        main_niks = _load_niks(main_path)
-        skipped = {item["nik"] for item in self.progress.skipped_niks}
-        working = _unique_preserve(self.progress.used_niks)
-
-        start = self.progress.main_next_index
-        queue = [nik for nik in main_niks[start:] if nik not in skipped]
-
-        save_filtered_file(self.filtered_path, working, queue)
-        self.niks = queue
-        self.working = working
+        self.working = _unique_preserve(self.progress.used_niks)
+        self.niks = _unique_preserve(_load_niks(main_path))
+        self._save_filtered()
         self.progress.using_filtered = True
         if migrated:
             self.progress.save(progress_path)
@@ -124,8 +131,10 @@ class NikStore:
         return max(0, len(self.niks) - self.progress.next_index)
 
     def next_nik(self) -> str | None:
-        if self.progress.next_index >= len(self.niks):
+        if not self.niks:
             return None
+        if self.progress.next_index >= len(self.niks):
+            self._complete_cycle()
         nik = self.niks[self.progress.next_index]
         self.progress.next_index += 1
         return nik
@@ -146,6 +155,27 @@ class NikStore:
         self._touch()
         self.progress.save(self.progress_path)
 
+    def _complete_cycle(self) -> None:
+        """End of queue: move working NIKs into nik.json, then restart at index 0."""
+        logger.info(
+            "Reached last NIK — moving %s working NIK(s) into %s, restarting at index 0",
+            len(self.working),
+            self.main_path.name,
+        )
+        self._sync_working_to_main()
+        self.niks = _unique_preserve(_load_niks(self.main_path))
+        self.progress.next_index = 0
+        self._save_filtered()
+        self.progress.save(self.progress_path)
+
+    def _sync_working_to_main(self) -> None:
+        if not self.working:
+            return
+        main_niks = _unique_preserve(_load_niks(self.main_path))
+        merged = _unique_preserve(self.working + main_niks)
+        save_main_file(self.main_path, merged)
+        self.niks = merged
+
     def _save_filtered(self) -> None:
         queue = self.niks[self.progress.next_index :]
         save_filtered_file(self.filtered_path, self.working, queue)
@@ -155,11 +185,13 @@ class NikStore:
 
     def summary(self) -> str:
         p = self.progress
+        at_end = p.next_index >= len(self.niks) if self.niks else False
         return (
-            f"Source: nik-filtered.json (from index {p.main_next_index})\n"
+            f"Source: {self.main_path.name} ({len(self.niks)} NIKs, loops at end)\n"
             f"Working NIKs saved: {len(self.working)}\n"
-            f"Queue remaining: {self.remaining_count()}\n"
-            f"Queue index: {p.next_index}\n"
+            f"Queue remaining (this pass): {self.remaining_count()}\n"
+            f"Queue index: {p.next_index}"
+            f"{' (at end — next NIK restarts at 0)' if at_end else ''}\n"
             f"Success: {p.success_count}\n"
             f"Skipped: {len(p.skipped_niks)}\n"
             f"Last run: {p.last_run or '-'}"
