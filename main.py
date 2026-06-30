@@ -115,6 +115,7 @@ def _fallback_config() -> Config:
         captcha_wait_seconds=120,
         progress_file=Path("progress.json"),
         filtered_file=Path("nik-filtered.json"),
+        quantity_pattern=[1, 2, 2],
     )
 
 

@@ -55,6 +55,7 @@ class MapBot:
     def __init__(self, config: Config, store: NikStore):
         self.config = config
         self.store = store
+        self._qty_index = 0
 
     def run(
         self,
@@ -91,7 +92,10 @@ class MapBot:
             finally:
                 if wait_at_end and show_browser:
                     print("\n>>> Finished. Press Enter to close the browser...")
-                    input()
+                    try:
+                        input()
+                    except EOFError:
+                        pass
                 browser.close()
 
     def _process_sales(self, page: Page, limit: int | None, processed: int) -> None:
@@ -277,6 +281,80 @@ class MapBot:
             return int(match.group(1))
         return None
 
+    def _next_quantity(self) -> int:
+        """Return the next 'jumlah produk' from the configured pattern.
+
+        The pattern repeats across orders (e.g. 1, 2, 2, 1, 2, 2, ...), so
+        every cycle sells more tubes and stock reaches 0 faster.
+        """
+        pattern = self.config.quantity_pattern or [1]
+        qty = pattern[self._qty_index % len(pattern)]
+        self._qty_index += 1
+        return qty
+
+    # Quantity stepper on the order screen (MyPertamina MAP).
+    QTY_INPUT_SEL = "[data-testid='numberInput']"
+    QTY_PLUS_SEL = "[data-testid='actionIcon2']"
+
+    def _read_quantity(self, page: Page) -> int | None:
+        """Read the currently selected jumlah produk from the stepper input."""
+        for sel in (self.QTY_INPUT_SEL, "input[inputmode='numeric']", "input[type='number']"):
+            inp = page.locator(sel)
+            if inp.count() > 0:
+                try:
+                    val = (inp.first.input_value() or "").strip()
+                    if val.isdigit():
+                        return int(val)
+                except Exception:
+                    continue
+        return None
+
+    def _set_quantity(self, page: Page, qty: int) -> None:
+        """Set the product quantity by pressing the '+' button on the order page."""
+        if qty <= 1:
+            return
+
+        logger.info("Setting jumlah produk to %s", qty)
+
+        plus = page.locator(self.QTY_PLUS_SEL)
+        if plus.count() == 0 or not plus.first.is_visible():
+            self._dump_buttons(page)
+            logger.warning("Could not find '+' button; leaving jumlah produk at 1")
+            return
+        plus = plus.first
+
+        # Click '+' until we reach the target (safety cap to avoid looping
+        # forever if the stepper hits its max).
+        for _ in range(qty + 2):
+            current = self._read_quantity(page)
+            if current is not None and current >= qty:
+                break
+            try:
+                plus.click(timeout=3000)
+                page.wait_for_timeout(350)
+            except PlaywrightTimeout:
+                logger.warning("Quantity '+' button stopped responding")
+                break
+
+        final = self._read_quantity(page)
+        if final is not None and final != qty:
+            logger.warning(
+                "Jumlah produk is %s after clicks (wanted %s)", final, qty
+            )
+
+    def _dump_buttons(self, page: Page) -> None:
+        try:
+            labels = []
+            btns = page.locator("button, [role='button']")
+            for i in range(min(btns.count(), 40)):
+                try:
+                    labels.append(repr((btns.nth(i).inner_text() or "").strip()[:25]))
+                except Exception:
+                    continue
+            logger.warning("Visible buttons: %s", ", ".join(labels))
+        except Exception:
+            pass
+
     def _try_record_sale(self, page: Page, nik: str) -> SaleOutcome:
         logger.info("Trying NIK: %s", nik)
         self._open_catat_penjualan(page)
@@ -301,6 +379,8 @@ class MapBot:
             self._click_button(page, "TUTUP")
             self._return_home(page)
             return SaleOutcome(SaleResult.SKIP, "NIK not accepted")
+
+        self._set_quantity(page, self._next_quantity())
 
         page.get_by_role("button", name="CEK PESANAN").click()
         page.wait_for_timeout(2000)

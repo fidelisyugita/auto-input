@@ -47,6 +47,10 @@
     <label for="action_delay_ms">Action delay (ms)</label>
     <input type="number" id="action_delay_ms" name="action_delay_ms" value="{{ settings.action_delay_ms }}" min="100" max="5000">
 
+    <label for="quantity_pattern">Jumlah produk pattern (repeats)</label>
+    <input type="text" id="quantity_pattern" name="quantity_pattern" value="{{ settings.quantity_pattern }}" placeholder="1,2,2">
+    <p class="muted" style="margin-top:4px">Comma-separated, repeats per order. Default per order is 1. Higher numbers empty stock faster (e.g. 1,2,2).</p>
+
     <div style="margin-top: 16px">
       <button type="submit" class="btn btn-primary" {% if runner.running %}disabled{% endif %}>Save settings</button>
     </div>

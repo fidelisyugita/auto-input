@@ -111,12 +111,23 @@ async def dashboard(request: Request):
     )
 
 
+def _normalize_quantity_pattern(raw: str) -> str:
+    """Keep only positive integers, e.g. "1, 2 ,2" -> "1,2,2"."""
+    values = []
+    for chunk in (raw or "").split(","):
+        chunk = chunk.strip()
+        if chunk.isdigit() and int(chunk) >= 1:
+            values.append(str(int(chunk)))
+    return ",".join(values) or "1"
+
+
 @app.post("/settings")
 async def update_settings(
     request: Request,
     merchant_phone: str = Form(...),
     merchant_pin: str = Form(...),
     action_delay_ms: int = Form(500),
+    quantity_pattern: str = Form("1,2,2"),
 ):
     user = require_user(request)
     if isinstance(user, RedirectResponse):
@@ -132,6 +143,7 @@ async def update_settings(
             "merchant_phone": merchant_phone.strip(),
             "merchant_pin": merchant_pin.strip(),
             "action_delay_ms": action_delay_ms,
+            "quantity_pattern": _normalize_quantity_pattern(quantity_pattern),
         }
     )
     return RedirectResponse("/dashboard?message=Settings+saved", status_code=303)

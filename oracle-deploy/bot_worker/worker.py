@@ -11,7 +11,11 @@ BOT_CORE = Path(__file__).resolve().parent.parent / "bot_core"
 sys.path.insert(0, str(BOT_CORE))
 
 from bot import MapBot  # noqa: E402
-from config import Config  # noqa: E402
+from config import (  # noqa: E402
+    Config,
+    DEFAULT_QUANTITY_PATTERN,
+    parse_quantity_pattern,
+)
 from nik_store import NikStore  # noqa: E402
 
 logging.basicConfig(
@@ -46,6 +50,7 @@ def load_settings() -> dict:
         "nik_file": "nik.json",
         "action_delay_ms": int(os.getenv("ACTION_DELAY_MS", "500")),
         "captcha_wait_seconds": int(os.getenv("CAPTCHA_WAIT_SECONDS", "120")),
+        "quantity_pattern": os.getenv("QUANTITY_PATTERN", DEFAULT_QUANTITY_PATTERN),
     }
 
 
@@ -62,6 +67,9 @@ def build_config(settings: dict) -> Config:
         captcha_wait_seconds=int(settings.get("captcha_wait_seconds", 120)),
         progress_file=base / "progress.json",
         filtered_file=base / "nik-filtered.json",
+        quantity_pattern=parse_quantity_pattern(
+            settings.get("quantity_pattern", DEFAULT_QUANTITY_PATTERN)
+        ),
     )
 
 

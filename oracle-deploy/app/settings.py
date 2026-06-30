@@ -22,6 +22,7 @@ def default_settings() -> dict:
         "nik_file": "nik.json",
         "action_delay_ms": int(os.getenv("ACTION_DELAY_MS", "500")),
         "captcha_wait_seconds": int(os.getenv("CAPTCHA_WAIT_SECONDS", "120")),
+        "quantity_pattern": os.getenv("QUANTITY_PATTERN", "1,2,2"),
     }
 
 
